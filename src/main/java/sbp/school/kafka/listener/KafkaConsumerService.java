@@ -4,14 +4,15 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Properties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import sbp.school.kafka.config.KafkaConfig;
 import sbp.school.kafka.dto.TransactionDto;
+import sbp.school.kafka.service.InMemoryStorage;
 
 /**
  * Сервис для чтения и обработки сообщений из Kafka-топика. Реализует автоматическое управление
@@ -22,39 +23,48 @@ import sbp.school.kafka.dto.TransactionDto;
  * @since 1.0
  */
 @Slf4j
-public class KafkaConsumerService implements AutoCloseable {
+public class KafkaConsumerService extends Thread implements AutoCloseable {
 
     /**
-     * Имя топика Kafka для подписки.
+     * Имя топика Kafka для чтения сообщений.
      */
     private final String topic;
 
     /**
-     * Потребитель Kafka для чтения сообщений.
+     * Потребитель Kafka для чтения записей из топика.
      */
     private final KafkaConsumer<String, TransactionDto> consumer;
 
     /**
-     * Текущие смещения для каждой партиции.
+     * Уникальный идентификатор продюсера для отслеживания.
+     */
+    public static final String PRODUCER_ID = "producer-id";
+
+    /**
+     * Текущие смещения для каждой партиции, ожидающие подтверждения.
      */
     private final Map<TopicPartition, OffsetAndMetadata> currentOffsets = new HashMap<>();
 
     /**
-     * Создает новый экземпляр сервиса с указанными свойствами потребителя.
-     *
-     * @param kafkaConsumerProperties свойства конфигурации потребителя Kafka
+     * Хранилище транзакций для управления состоянием обработки.
      */
-    public KafkaConsumerService(Properties kafkaConsumerProperties) {
-        this.consumer = new KafkaConsumer<>(kafkaConsumerProperties);
-        this.topic = kafkaConsumerProperties.getProperty("topic.name");
+    private final InMemoryStorage storage;
+
+    /**
+     * Создает новый экземпляр сервиса потребителя Kafka.
+     *
+     * @param config  конфигурация Kafka для настройки потребителя
+     * @param storage хранилище транзакций для обработки сообщений
+     */
+    public KafkaConsumerService(KafkaConfig config, InMemoryStorage storage) {
+        this.consumer = new KafkaConsumer<>(config.getTransactionConsumerProperties());
+        this.topic = config.getTransactionConsumerProperties().getProperty("consumer.topic.name");
+        this.storage = storage;
     }
 
     /**
-     * Начинает непрерывное чтение сообщений из топика. Выполняет следующие операции: 1.
-     * Подписывается на указанный топик 2. Периодически опрашивает брокеры на наличие новых
-     * сообщений 3. Обрабатывает полученные записи 4. Сохраняет смещения в асинхронном режиме
-     *
-     * @throws RuntimeException если возникла критическая ошибка при чтении
+     * Запускает процесс чтения и обработки сообщений из Kafka-топика. Реализует циклическое чтение
+     * с обработкой ошибок и корректным завершением.
      */
     public void read() {
         consumer.subscribe(Collections.singletonList(topic));
@@ -76,9 +86,9 @@ public class KafkaConsumerService implements AutoCloseable {
     }
 
     /**
-     * Обрабатывает набор полученных сообщений из Kafka.
+     * Обрабатывает полученную партию сообщений из Kafka.
      *
-     * @param records набор записей для обработки
+     * @param records набор записей из Kafka
      */
     private void processMessages(ConsumerRecords<String, TransactionDto> records) {
         for (ConsumerRecord<String, TransactionDto> record : records) {
@@ -93,24 +103,45 @@ public class KafkaConsumerService implements AutoCloseable {
     }
 
     /**
-     * Обрабатывает отдельную запись из Kafka.
+     * Обрабатывает отдельную запись из Kafka, проверяя валидность данных.
      *
-     * @param record запись для обработки
+     * @param record запись из Kafka для обработки
+     */
+    private void processRecord(ConsumerRecord<String, TransactionDto> record) {
+        TransactionDto transaction = record.value();
+        String producerId = new String(record.headers().lastHeader(PRODUCER_ID).value());
+        if (transaction == null || producerId.isBlank()) {
+            log.warn("Пропущено невалидного сообщение: producerId={}, offset={}", producerId,
+                record.offset());
+            return;
+        }
+
+        storage.addTransactionForProducer(producerId, transaction);
+
+        log.debug("Получена и обработана валидная транзакция: {}, producerId={}, offset={}",
+            transaction, producerId, record.offset());
+    }
+
+    /**
+     * Обрабатывает сообщение с проверкой на null и логированием.
+     *
+     * @param record запись из Kafka для обработки
      */
     private void handleMessage(ConsumerRecord<String, TransactionDto> record) {
         TransactionDto transactionDto = record.value();
         if (transactionDto != null) {
             log.info("Сообщение успешно обработано: {}, offset={}", transactionDto,
                 record.offset());
+            processRecord(record);
         } else {
             log.error("Получено сообщение с пустым значением: offset={}", record.offset());
         }
     }
 
     /**
-     * Отслеживает смещение для записи.
+     * Отслеживает смещение для записи в Kafka.
      *
-     * @param record запись для отслеживания
+     * @param record запись из Kafka
      */
     private void trackOffset(ConsumerRecord<String, TransactionDto> record) {
         currentOffsets.put(
@@ -120,8 +151,7 @@ public class KafkaConsumerService implements AutoCloseable {
     }
 
     /**
-     * Выполняет асинхронное подтверждение текущих смещений. Логирует успешное подтверждение или
-     * ошибку.
+     * Асинхронно подтверждает текущие смещения в Kafka.
      */
     private void commitCurrentOffsets() {
         if (!currentOffsets.isEmpty()) {
@@ -136,8 +166,7 @@ public class KafkaConsumerService implements AutoCloseable {
     }
 
     /**
-     * Выполняет корректное завершение работы сервиса: 1. Выполняет финальное синхронное
-     * подтверждение смещений 2. Очищает текущие смещения 3. Закрывает потребитель
+     * Корректно завершает работу сервиса, выполняя финальное подтверждение смещений.
      */
     private void shutdown() {
         try {
@@ -153,8 +182,7 @@ public class KafkaConsumerService implements AutoCloseable {
     }
 
     /**
-     * Запрашивает корректное завершение работы потребителя. Вызывает метод wakeup() для прерывания
-     * текущего poll.
+     * Запрашивает корректное завершение работы сервиса. Реализует метод интерфейса AutoCloseable.
      */
     @Override
     public void close() {

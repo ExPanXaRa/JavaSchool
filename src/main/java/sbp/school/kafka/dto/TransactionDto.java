@@ -22,6 +22,11 @@ import sbp.school.kafka.util.enums.TransactionOperationType;
 public final class TransactionDto {
 
     /**
+     * Идентификатор
+     */
+    private final String id;
+
+    /**
      * Тип операции транзакции (TRANSFER, DEPOSIT, COMMISSIONS)
      */
     private final TransactionOperationType operationType;
@@ -51,10 +56,12 @@ public final class TransactionDto {
      */
     @JsonCreator
     public TransactionDto(
+        @JsonProperty("id") String id,
         @JsonProperty("operationType") TransactionOperationType operationType,
         @JsonProperty("amount") BigDecimal amount,
         @JsonProperty("account") String account,
         @JsonProperty("date") OffsetDateTime date) {
+        this.id = id;
         this.operationType = operationType;
         this.amount = amount;
         this.account = account;
