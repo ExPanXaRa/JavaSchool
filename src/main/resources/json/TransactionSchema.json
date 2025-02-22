@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "operationType": {
+      "type": "string",
+      "enum": ["TRANSFER", "DEPOSIT", "COMMISSIONS"]
+    },
+    "amount": {
+      "type": "number",
+      "minimum": 0
+    },
+    "account": {
+      "type": "string",
+      "minLength": 8
+    },
+    "date": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?([+-]\\d{2}:\\d{2}|Z)$"
+    }
+  },
+  "required": ["operationType", "amount", "account", "date"]
+}
