@@ -1,58 +1,196 @@
 package sbp.school.kafka.producer;
 
-import java.util.Properties;
+import static sbp.school.kafka.util.ChecksumHelper.getIntervalKey;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import sbp.school.kafka.config.KafkaConfig;
 import sbp.school.kafka.dto.TransactionDto;
+import sbp.school.kafka.service.InMemoryStorage;
 
 /**
- * Сервис для отправки транзакционных данных в Kafka.
+ * Сервис для отправки транзакций в Kafka с поддержкой повторных попыток отправки. Реализует
+ * механизм обработки неудачных отправок и автоматического повторения.
  *
  * @author Alexander Dylevskiy
  * @version 1.0
  * @since 1.0
  */
 @Slf4j
-public class KafkaProducerService {
+@Getter
+public class KafkaProducerService extends Thread implements AutoCloseable {
 
     /**
-     * Название топика Kafka для отправки сообщений
+     * Имя топика Kafka для отправки транзакций.
      */
     private final String topic;
 
     /**
-     * Производитель Kafka для отправки сообщений
+     * Продюсер Kafka для отправки сообщений.
      */
     private final KafkaProducer<String, TransactionDto> kafkaProducer;
 
     /**
-     * Создает новый экземпляр сервиса для отправки сообщений в Kafka.
-     *
-     * @param kafkaProducerProperties Свойства конфигурации Kafka-производителя
+     * Таймаут ожидания подтверждения отправки транзакции.
      */
-    public KafkaProducerService(Properties kafkaProducerProperties) {
-        this.topic = kafkaProducerProperties.getProperty("topic.name");
-        this.kafkaProducer = new KafkaProducer<>(kafkaProducerProperties);
+    private final Duration ackTimeout;
+
+    /**
+     * Продолжительность интервала для вычисления контрольных сумм.
+     */
+    private final Duration checksumIntervalDuration;
+
+    /**
+     * Максимальное количество попыток повторной отправки транзакции.
+     */
+    private final int retryMaxCount;
+
+    /**
+     * Уникальный идентификатор продюсера для отслеживания.
+     */
+    private final String producerId = UUID.randomUUID().toString();
+
+    /**
+     * Хранилище транзакций для управления состоянием отправки.
+     */
+    private final InMemoryStorage storage;
+
+    /**
+     * Создает новый экземпляр сервиса отправки транзакций.
+     *
+     * @param kafkaConfig конфигурация Kafka для настройки продюсера
+     * @param storage     хранилище транзакций для отслеживания состояния
+     */
+    public KafkaProducerService(KafkaConfig kafkaConfig, InMemoryStorage storage) {
+        this.topic = kafkaConfig.getTransactionProducerConfig().getProperty("topic.name");
+        this.kafkaProducer = new KafkaProducer<>(kafkaConfig.getTransactionProducerConfig());
+        this.ackTimeout = Duration.parse(kafkaConfig.getPropertyValue("consumer.timeout"));
+        this.checksumIntervalDuration = Duration.parse(
+            kafkaConfig.getPropertyValue("consumer.interval"));
+        this.retryMaxCount = Integer.parseInt(
+            kafkaConfig.getPropertyValue("producer.max-retry"));
+        this.storage = storage;
+        log.info("Сервис отправки транзакций инициализирован для топика: {}", topic);
     }
 
     /**
-     * Отправляет транзакцию в Kafka-топик.
+     * Отправляет транзакцию в Kafka с асинхронным подтверждением.
      *
-     * @param transactionDto Транзакция для отправки
+     * @param transactionDto объект транзакции для отправки
      */
     public void send(TransactionDto transactionDto) {
         ProducerRecord<String, TransactionDto> record = new ProducerRecord<>(topic, transactionDto);
 
-        kafkaProducer.send(record, ((recordMetadata, e) -> {
-            if (e == null) {
-                log.error(
-                    "Во время отправки сообщения возникла ошибка: partition - {}, offset - {}",
-                    recordMetadata.partition(), recordMetadata.offset());
+        kafkaProducer.send(record, (recordMetadata, e) -> {
+            if (e != null) {
+                log.error("Ошибка при отправке сообщения: partition={}, offset={}",
+                    recordMetadata.partition(), recordMetadata.offset(), e);
             } else {
-                log.debug("Сообщение успешно отправлено: partition - {}, offset - {}",
+                log.debug("Сообщение успешно отправлено: partition={}, offset={}",
                     recordMetadata.partition(), recordMetadata.offset());
             }
-        }));
+        });
+    }
+
+    /**
+     * Проверяет и повторно отправляет транзакции, которые не получили подтверждение в течение
+     * заданного таймаута.
+     *
+     * @see #ackTimeout
+     */
+    public void retryFailedTransactions() {
+        if (storage.isSentTransactionsEmpty()) {
+            log.trace("Нет транзакций для повторной отправки");
+            return;
+        }
+
+        OffsetDateTime now = OffsetDateTime.now();
+        OffsetDateTime timeoutThresholdTime = now.minus(ackTimeout);
+        Long timeoutThresholdIntervalKey = getIntervalKey(timeoutThresholdTime,
+            checksumIntervalDuration);
+
+        Set<Long> intervalKeysToRetry = storage.getSentTransactionIntervalKeys().stream()
+            .filter(intervalKey -> intervalKey < timeoutThresholdIntervalKey)
+            .collect(Collectors.toSet());
+
+        for (Long intervalKey : intervalKeysToRetry) {
+            if (retryTransactionsForInterval(intervalKey, now) > 0) {
+                log.debug("Выполнена повторная отправка транзакций для интервала: intervalKey={}",
+                    intervalKey);
+            }
+            storage.cleanupInterval(intervalKey);
+        }
+    }
+
+    /**
+     * Повторно отправляет транзакции для указанного интервала времени.
+     *
+     * @param intervalKey ключ интервала времени
+     * @param time        текущее время для создания новых транзакций
+     * @return количество отправленных транзакций
+     */
+    private int retryTransactionsForInterval(Long intervalKey, OffsetDateTime time) {
+        List<TransactionDto> transactions = storage.getSentTransactions(intervalKey);
+        int transactionsSentCount = 0;
+
+        for (TransactionDto transaction : transactions) {
+            String transactionId = transaction.getId();
+            int retryCount = storage.getRetryCount(transactionId);
+            if (retryCount < retryMaxCount) {
+                storage.putRetryCount(transactionId, ++retryCount);
+                TransactionDto retryTransaction = createRetryTransaction(transaction, time);
+                send(retryTransaction);
+                transactionsSentCount++;
+            } else {
+                log.warn(
+                    "Превышено максимальное количество повторных отправок для транзакции: id={}, retryCount={}",
+                    transactionId, retryCount);
+            }
+        }
+
+        return transactionsSentCount;
+    }
+
+    /**
+     * Создает новую транзакцию для повторной отправки на основе оригинальной.
+     *
+     * @param original оригинальная транзакция
+     * @param time     текущее время для новой транзакции
+     * @return новая транзакция с обновленным временем
+     */
+    private TransactionDto createRetryTransaction(TransactionDto original, OffsetDateTime time) {
+        return new TransactionDto(
+            original.getId(),
+            original.getOperationType(),
+            original.getAmount(),
+            original.getAccount(),
+            time
+        );
+    }
+
+    /**
+     * Запускает процесс повторной отправки неудачных транзакций. Реализует метод интерфейса
+     * Runnable.
+     */
+    @Override
+    public void run() {
+        retryFailedTransactions();
+    }
+
+    /**
+     * Завершает работу сервиса и освобождает ресурсы Kafka-продюсера.
+     */
+    @Override
+    public void close() {
+        log.info("Завершение работы сервиса отправки транзакций");
+        kafkaProducer.close();
     }
 }
