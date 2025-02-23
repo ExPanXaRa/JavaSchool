@@ -1,1 +1,1 @@
-sbp.school.kafka.connect.CustomFileStreamSourceConnector
+sbp.school.kafka.connect.CustomDBStreamSourceConnector
