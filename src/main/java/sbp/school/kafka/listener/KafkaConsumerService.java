@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -33,7 +34,7 @@ public class KafkaConsumerService extends Thread implements AutoCloseable {
     /**
      * Потребитель Kafka для чтения записей из топика.
      */
-    private final KafkaConsumer<String, TransactionDto> consumer;
+    private final Consumer<String, TransactionDto> consumer;
 
     /**
      * Уникальный идентификатор продюсера для отслеживания.
@@ -56,8 +57,8 @@ public class KafkaConsumerService extends Thread implements AutoCloseable {
      * @param config  конфигурация Kafka для настройки потребителя
      * @param storage хранилище транзакций для обработки сообщений
      */
-    public KafkaConsumerService(KafkaConfig config, InMemoryStorage storage) {
-        this.consumer = new KafkaConsumer<>(config.getTransactionConsumerProperties());
+    public KafkaConsumerService(KafkaConfig config, InMemoryStorage storage, Consumer<String, TransactionDto> consumer) {
+        this.consumer = consumer;
         this.topic = config.getTransactionConsumerProperties().getProperty("consumer.topic.name");
         this.storage = storage;
     }
