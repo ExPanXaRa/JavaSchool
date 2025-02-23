@@ -22,6 +22,11 @@ import sbp.school.kafka.util.enums.TransactionOperationType;
 public final class TransactionDto {
 
     /**
+     * Уникальный идентификатор транзакции.
+     */
+    private final String id;
+
+    /**
      * Тип операции транзакции (TRANSFER, DEPOSIT, COMMISSIONS)
      */
     private final TransactionOperationType operationType;
