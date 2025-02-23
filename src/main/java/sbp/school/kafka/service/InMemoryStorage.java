@@ -1,9 +1,13 @@
 package sbp.school.kafka.service;
 
+import static sbp.school.kafka.util.ChecksumHelper.calculateChecksum;
+
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import lombok.Getter;
 import sbp.school.kafka.dto.TransactionDto;
 
@@ -88,6 +92,24 @@ public class InMemoryStorage {
      */
     public boolean isTransactionsSendInProgressEmpty() {
         return transactionsSendInProgress.isEmpty();
+    }
+
+    /**
+     * Обновляет checksum.
+     */
+    public void updateCheckSum(long intervalKey) {
+        sentChecksumMap.put(intervalKey, calculateChecksum(
+            sentTransactions.get(intervalKey).stream().map(TransactionDto::getId).collect(
+                Collectors.toList())));
+    }
+
+    public void putTransactionSendInProgress(TransactionDto transaction) {
+        transactionsSendInProgress.put(transaction.getId(), transaction);
+    }
+
+    public void putSentTransaction(long intervalKey, TransactionDto transaction) {
+        sentTransactions.computeIfAbsent(intervalKey, k -> new ArrayList<>()).add(transaction);
+
     }
 
     /**
