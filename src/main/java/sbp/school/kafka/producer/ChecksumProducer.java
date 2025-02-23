@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import sbp.school.kafka.config.KafkaConfig;
 import sbp.school.kafka.dto.ChecksumDto;
@@ -36,7 +37,7 @@ public class ChecksumProducer extends Thread implements AutoCloseable {
     /**
      * Продюсер Kafka для отправки сообщений.
      */
-    private final KafkaProducer<String, ChecksumDto> producer;
+    private final Producer<String, ChecksumDto> producer;
 
     /**
      * Хранилище транзакций для доступа к данным.
@@ -59,8 +60,8 @@ public class ChecksumProducer extends Thread implements AutoCloseable {
      * @param config  конфигурация Kafka
      * @param storage хранилище транзакций
      */
-    public ChecksumProducer(KafkaConfig config, InMemoryStorage storage) {
-        this.producer = new KafkaProducer<>(config.getChecksumProducerProperties());
+    public ChecksumProducer(KafkaConfig config, InMemoryStorage storage, Producer<String, ChecksumDto> producer) {
+        this.producer = producer;
         this.topicName = config.getPropertyValue("producer.topic.name");
         this.storage = storage;
         this.receiveTimeout = Duration.parse(config.getPropertyValue("consumer.timeout"));
