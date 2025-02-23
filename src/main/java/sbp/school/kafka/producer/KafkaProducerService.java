@@ -11,6 +11,7 @@ import java.util.stream.Collectors;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import sbp.school.kafka.config.KafkaConfig;
@@ -37,7 +38,7 @@ public class KafkaProducerService extends Thread implements AutoCloseable {
     /**
      * Продюсер Kafka для отправки сообщений.
      */
-    private final KafkaProducer<String, TransactionDto> kafkaProducer;
+    private final Producer<String, TransactionDto> kafkaProducer;
 
     /**
      * Таймаут ожидания подтверждения отправки транзакции.
@@ -70,9 +71,9 @@ public class KafkaProducerService extends Thread implements AutoCloseable {
      * @param kafkaConfig конфигурация Kafka для настройки продюсера
      * @param storage     хранилище транзакций для отслеживания состояния
      */
-    public KafkaProducerService(KafkaConfig kafkaConfig, InMemoryStorage storage) {
+    public KafkaProducerService(KafkaConfig kafkaConfig, InMemoryStorage storage,  Producer<String, TransactionDto> kafkaProducer) {
         this.topic = kafkaConfig.getTransactionProducerConfig().getProperty("topic.name");
-        this.kafkaProducer = new KafkaProducer<>(kafkaConfig.getTransactionProducerConfig());
+        this.kafkaProducer = kafkaProducer;
         this.ackTimeout = Duration.parse(kafkaConfig.getPropertyValue("consumer.timeout"));
         this.checksumIntervalDuration = Duration.parse(
             kafkaConfig.getPropertyValue("consumer.interval"));
