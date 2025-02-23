@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -35,7 +36,7 @@ public class ChecksumConsumer extends Thread implements AutoCloseable {
     /**
      * Потребитель Kafka для чтения записей из топика.
      */
-    private final KafkaConsumer<String, ChecksumDto> consumer;
+    private final Consumer<String, ChecksumDto> consumer;
 
     /**
      * Текущие офсеты для каждой партиции, ожидающие подтверждения.
@@ -53,9 +54,9 @@ public class ChecksumConsumer extends Thread implements AutoCloseable {
      * @param config  конфигурация Kafka для настройки потребителя
      * @param storage хранилище транзакций для проверки контрольных сумм
      */
-    public ChecksumConsumer(KafkaConfig config, InMemoryStorage storage) {
+    public ChecksumConsumer(KafkaConfig config, InMemoryStorage storage, Consumer<String, ChecksumDto> consumer) {
         Properties consumerProperties = config.getTransactionAckConsumerConfig();
-        this.consumer = new KafkaConsumer<>(consumerProperties);
+        this.consumer = consumer;
         this.topicName = config.getPropertyValue("consumer.topic.name");
         this.storage = storage;
         log.info("Потребитель подтверждений инициализирован для топика: {}", topicName);
